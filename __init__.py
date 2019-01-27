@@ -21,15 +21,11 @@ import sopel.config.types
 import sopel.tools
 import sys
 
-# Import the note function to ensure we still get updates on people
-# TODO: Replace this with our own
-from sopel.modules.seen import note
-
 # Import all the jokes
 from .jokes import *
 
-# Import the logger
-from .logs import *
+# TODO: Import the logger
+#from .logs import *
 
 # Import the GitHub hook
 from .github import init_bot_webhook
@@ -51,6 +47,8 @@ def setup(bot):
 	if host and port:
 		init_bot_webhook(host, port, bot, channels=channels)
 
+# TODO: Enable once the new logs replacement is finished
+'''
 @sopel.module.nickname_commands('seen')
 def seen(bot, trigger):
 	# Pull the nick
@@ -106,6 +104,7 @@ def seen(bot, trigger):
 	else:
 		# We could not find the user
 		bot.say("Answer: I have not seen the meatbag named {}.".format(nick))
+'''
 
 @sopel.module.nickname_commands('die')
 def die(bot, trigger):
