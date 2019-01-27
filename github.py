@@ -73,6 +73,12 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 		elif event_type == 'push':
 			self._on_push(request)
 
+		# Accept the message
+		self.send_response(200)
+		self.send_header('Content-type', 'text.html')
+		self.end_headers()
+		self.wfile.write(bytes('<html><head><title>Success</title></head><body></body></html>', 'utf-8'))
+
 	def _on_issues(self, request):
 		action = request['action']
 
