@@ -17,6 +17,7 @@
 
 import datetime
 import sopel
+import sopel.config.types
 import sopel.tools
 import sys
 
@@ -29,6 +30,24 @@ from .jokes import *
 
 # Import the logger
 from .logs import *
+
+# Import the GitHub hook
+from .github import init_bot_webhook
+
+class HK51Section(sopel.config.types.StaticSection):
+	host = sopel.config.types.ValidatedAttribute('host', default=None)
+	port = sopel.config.types.ValidatedAttribute('port', default=None, parse=int)
+
+def setup(bot):
+	# Define the section
+	config = bot.config
+	config.define_section('hk51', HK51Section)
+
+	host = config.hk51.host
+	port = config.hk51.port
+
+	if host and port:
+		init_bot_webhook(host, port, bot)
 
 @sopel.module.nickname_commands('seen')
 def seen(bot, trigger):
