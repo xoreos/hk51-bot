@@ -17,6 +17,7 @@
 
 import http.server
 import json
+import ssl
 import threading
 
 _message_hook = None
@@ -225,13 +226,29 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 			hook.on_messages(messages)
 
 
-def init_bot_webhook(host, port, bot, channels=[]):
-	# Create the output hook
+def _create_server(host, port, cert_file=None, hook=None):
+	# Assign the hook
 	global _message_hook
-	_message_hook = BotHook(bot, channels)
+	_message_hook = hook
 
-	# Setup the server
+	# Create the basic server
 	server = http.server.HTTPServer((host, port), GitHubRequestHandler)
+
+	# Wrap in TLS if we have a cert
+	if cert_file:
+		# Create a client-authenticating context
+		context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
+		context.load_cert_chain(cert_file)
+
+		# Wrap the socket
+		server.socket = context.wrap_socket(server.socket, server_side=True)
+
+	return server
+
+
+def init_bot_webhook(host, port, bot, channels=[], cert_file=None):
+	# Create the server
+	server = _create_server(host, port, hook=BotHook(bot, channels), cert_file=cert_file)
 
 	# Spawn a thread to handle the requests
 	thread = threading.Thread(target=server.serve_forever)
@@ -245,13 +262,11 @@ if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--host', help='Host to bind to', default='127.0.0.1')
 	parser.add_argument('--port', help='Port to listen on', type=int, default=80)
+	parser.add_argument('--cert-file', help='Certificate file')
 	args = parser.parse_args()
 
-	# Create the output hook
-	_message_hook = StdOutHook()
-
-	# Set up the listener
-	server = http.server.HTTPServer((args.host, args.port), GitHubRequestHandler)
+	# Create the server
+	server = _create_server(args.host, args.port, hook=StdOutHook(), cert_file=args.cert_file)
 
 	# Listen until someone sends in a SIGINT
 	server.serve_forever()
