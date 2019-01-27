@@ -34,12 +34,17 @@ class StdOutHook(GitHubHook):
 
 
 class BotHook(GitHubHook):
-	def __init__(self, bot):
+	def __init__(self, bot, channels):
 		self._bot = bot
+		self._channels = channels
 
 	def on_messages(self, messages):
-		for message in messages:
-			self._bot.say(message)
+		# Figure out the recipients
+		recipients = sorted([channel for channel in self._bot.channels.keys() if not self._channels or channel in self._channels])
+
+		for recipient in recipients:
+			for message in messages:
+				self._bot.say(message, recipient)
 
 
 class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
@@ -198,7 +203,7 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 
 		messages = [top_message]
 
-        # Truncate the commits to the first three and print them
+		# Truncate the commits to the first three and print them
 		for commit in commits[:3]:
 			commit_hash = commit['id']
 			author = commit['author']
@@ -214,9 +219,10 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 			hook.on_messages(messages)
 
 
-def init_bot_webhook(host, port, bot):
+def init_bot_webhook(host, port, bot, channels=[]):
 	# Create the output hook
-	_message_hook = BotHook(bot)
+	global _message_hook
+	_message_hook = BotHook(bot, channels)
 
 	# Setup the server
 	server = http.server.HTTPServer((host, port), GitHubRequestHandler)
