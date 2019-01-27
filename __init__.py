@@ -35,8 +35,9 @@ from .logs import *
 from .github import init_bot_webhook
 
 class HK51Section(sopel.config.types.StaticSection):
-	host = sopel.config.types.ValidatedAttribute('host', default=None)
-	port = sopel.config.types.ValidatedAttribute('port', default=None, parse=int)
+	host = sopel.config.types.ValidatedAttribute('github_host', default=None)
+	port = sopel.config.types.ValidatedAttribute('github_port', default=None, parse=int)
+	channels = sopel.config.types.ListAttribute('github_channels', default=[])
 
 def setup(bot):
 	# Define the section
@@ -45,9 +46,10 @@ def setup(bot):
 
 	host = config.hk51.host
 	port = config.hk51.port
+	channels = config.hk51.channels
 
 	if host and port:
-		init_bot_webhook(host, port, bot)
+		init_bot_webhook(host, port, bot, channels=channels)
 
 @sopel.module.nickname_commands('seen')
 def seen(bot, trigger):
