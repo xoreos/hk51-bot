@@ -102,7 +102,11 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 
 		# Verify the content
 		post_body = self.rfile.read(content_len)
-		if _secret and check_digest:
+		if _secret:
+			# Ensure that we actually have the field in the header
+			if not check_digest:
+				raise BadRequestError()
+
 			# Only accept sha1 for now
 			if not check_digest.startswith('sha1='):
 				raise BadRequestError()
