@@ -35,6 +35,7 @@ class HK51Section(sopel.config.types.StaticSection):
 	port = sopel.config.types.ValidatedAttribute('github_port', default=None, parse=int)
 	channels = sopel.config.types.ListAttribute('github_channels', default=[])
 	cert_file = sopel.config.types.ValidatedAttribute('github_cert_file', default=None)
+	secret = sopel.config.types.ValidatedAttribute('github_secret', default=None)
 
 def setup(bot):
 	# Define the section
@@ -45,9 +46,10 @@ def setup(bot):
 	port = config.hk51.port
 	channels = config.hk51.channels
 	cert_file = config.hk51.cert_file
+	secret = config.hk51.secret
 
 	if host and port:
-		init_bot_webhook(host, port, bot, channels=channels, cert_file=cert_file)
+		init_bot_webhook(host, port, bot, channels=channels, cert_file=cert_file, secret=secret)
 
 # TODO: Enable once the new logs replacement is finished
 '''
