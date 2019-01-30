@@ -50,21 +50,62 @@ class BotHook(GitHubHook):
 				self._bot.say(message, recipient)
 
 
+class HTTPError(Exception):
+	def __init__(self, code, text):
+		super().__init__('{0}: {1}'.format(code, text))
+		self.code = code
+		self.text = text
+
+
+class BadRequestError(HTTPError):
+	def __init__(self):
+		super().__init__(400, 'Bad Request')
+
+
+class ForbiddenError(HTTPError):
+	def __init__(self):
+		super().__init__(403, 'Forbidden')
+
+
 class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 	def do_POST(self):
+		try:
+			self._handle_post()
+		except HTTPError as ex:
+			code = ex.code
+			text = ex.text
+		except Exception as ex:
+			# Other exception we don't know about: it's our internal error
+			code = 500
+			text = 'Internal Error'
+		else:
+			code = 200
+			text = 'Success'
+
+		# Send the message back
+		self.send_response(code)
+		self.send_header('Content-type', 'text/plain')
+		self.end_headers()
+		self.wfile.write(text.encode('utf-8'))
+
+	def _handle_post(self):
 		# Pull in some needed headers
 		#delivery_guid = self.headers.get('X-Github-Delivery')
 		check_digest = self.headers.get('X-Hub-Signature')
 		event_type = self.headers.get('X-GitHub-Event')
+		content_type = self.headers.get('Content-Type')
 		content_len = int(self.headers.get('Content-Length'))
+
+		# Make sure we have a JSON request
+		if content_type != 'application/json':
+			raise BadRequestError()
 
 		# Verify the content
 		post_body = self.rfile.read(content_len)
 		if _secret and check_digest:
 			# Only accept sha1 for now
 			if not check_digest.startswith('sha1='):
-				self._send_server_error()
-				return
+				raise BadRequestError()
 
 			# Strip off the header
 			check_digest = check_digest[5:]
@@ -74,11 +115,13 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 
 			# Do a secure comparison to make sure we have it
 			if not hmac.compare_digest(correct_digest, check_digest):
-				self._send_server_error()
-				return
+				raise ForbiddenError()
 
 		# Parse the payload as json
-		request = json.loads(post_body)
+		try:
+			request = json.loads(post_body)
+		except json.JSONDecodeError:
+			raise BadRequestError()
 
 		'''
 		print('GOT REQUEST {0}'.format(event_type))
@@ -92,18 +135,6 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 			self._on_pull_request(request)
 		elif event_type == 'push':
 			self._on_push(request)
-
-		# Accept the message
-		self.send_response(200)
-		self.send_header('Content-type', 'text.html')
-		self.end_headers()
-		self.wfile.write(bytes('<html><head><title>Success</title></head><body></body></html>', 'utf-8'))
-
-	def _send_server_error(self):
-		self.send_response(500)
-		self.send_header('Content-type', 'text/html')
-		self.end_headers()
-		self.wfile.write(bytes('<html><head><title>500 Server Error</title></head><body></body></html>', 'utf-8'))
 
 	def _on_issues(self, request):
 		action = request['action']
