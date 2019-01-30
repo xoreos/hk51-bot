@@ -15,12 +15,14 @@
 # along with this program; if not, write to the Free Software Foundation,
 # Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 
+import hmac
 import http.server
 import json
 import ssl
 import threading
 
 _message_hook = None
+_secret = None
 
 
 class GitHubHook:
@@ -52,13 +54,30 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 	def do_POST(self):
 		# Pull in some needed headers
 		#delivery_guid = self.headers.get('X-Github-Delivery')
-		#hex_digest = self.headers.get('X-Hub-Signature')
+		check_digest = self.headers.get('X-Hub-Signature')
 		event_type = self.headers.get('X-GitHub-Event')
 		content_len = int(self.headers.get('Content-Length'))
 
-		# Parse the payload as json
+		# Verify the content
 		post_body = self.rfile.read(content_len)
-		# TODO: Check digest against request
+		if _secret and check_digest:
+			# Only accept sha1 for now
+			if not check_digest.startswith('sha1='):
+				self._send_server_error()
+				return
+
+			# Strip off the header
+			check_digest = check_digest[5:]
+
+			# Calculate the correct digest
+			correct_digest = hmac.new(_secret, msg=post_body, digestmod='sha1').hexdigest()
+
+			# Do a secure comparison to make sure we have it
+			if not hmac.compare_digest(correct_digest, check_digest):
+				self._send_server_error()
+				return
+
+		# Parse the payload as json
 		request = json.loads(post_body)
 
 		'''
@@ -79,6 +98,12 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 		self.send_header('Content-type', 'text.html')
 		self.end_headers()
 		self.wfile.write(bytes('<html><head><title>Success</title></head><body></body></html>', 'utf-8'))
+
+	def _send_server_error(self):
+		self.send_response(500)
+		self.send_header('Content-type', 'text/html')
+		self.end_headers()
+		self.wfile.write(bytes('<html><head><title>500 Server Error</title></head><body></body></html>', 'utf-8'))
 
 	def _on_issues(self, request):
 		action = request['action']
@@ -226,10 +251,17 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 			hook.on_messages(messages)
 
 
-def _create_server(host, port, cert_file=None, hook=None):
+def _create_server(host, port, cert_file=None, hook=None, secret=None):
 	# Assign the hook
 	global _message_hook
 	_message_hook = hook
+
+	# Assign the secret. Make sure it's encoded as a bytes object.
+	global _secret
+	if isinstance(secret, str):
+		_secret = secret.encode('utf-8')
+	else:
+		_secret = secret
 
 	# Create the basic server
 	server = http.server.HTTPServer((host, port), GitHubRequestHandler)
@@ -246,9 +278,9 @@ def _create_server(host, port, cert_file=None, hook=None):
 	return server
 
 
-def init_bot_webhook(host, port, bot, channels=[], cert_file=None):
+def init_bot_webhook(host, port, bot, channels=[], cert_file=None, secret=None):
 	# Create the server
-	server = _create_server(host, port, hook=BotHook(bot, channels), cert_file=cert_file)
+	server = _create_server(host, port, hook=BotHook(bot, channels), cert_file=cert_file, secret=secret)
 
 	# Spawn a thread to handle the requests
 	thread = threading.Thread(target=server.serve_forever)
@@ -263,10 +295,11 @@ if __name__ == '__main__':
 	parser.add_argument('--host', help='Host to bind to', default='127.0.0.1')
 	parser.add_argument('--port', help='Port to listen on', type=int, default=80)
 	parser.add_argument('--cert-file', help='Certificate file')
+	parser.add_argument('--secret', help='The secret to check the hash against')
 	args = parser.parse_args()
 
 	# Create the server
-	server = _create_server(args.host, args.port, hook=StdOutHook(), cert_file=args.cert_file)
+	server = _create_server(args.host, args.port, hook=StdOutHook(), cert_file=args.cert_file, secret=args.secret)
 
 	# Listen until someone sends in a SIGINT
 	server.serve_forever()
