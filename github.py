@@ -18,7 +18,9 @@
 import hmac
 import http.server
 import json
+import shutil
 import ssl
+import tempfile
 import threading
 
 _message_hook = None
@@ -286,7 +288,7 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 			hook.on_messages(messages)
 
 
-def _create_server(host, port, cert_file=None, hook=None, secret=None):
+def _create_server(host, port, cert_file=None, hook=None, secret=None, ca_file=None, key_file=None):
 	# Assign the hook
 	global _message_hook
 	_message_hook = hook
@@ -305,17 +307,37 @@ def _create_server(host, port, cert_file=None, hook=None, secret=None):
 	if cert_file:
 		# Create a client-authenticating context
 		context = ssl.create_default_context(purpose=ssl.Purpose.CLIENT_AUTH)
-		context.load_cert_chain(cert_file)
+
+		# If there was a separate CA file, combine them into a single file with the
+		# cert file.
+		if ca_file:
+			with tempfile.NamedTemporaryFile() as combined_fd:
+				# Copy both files to a combined one
+				for input_file_name in (cert_file, ca_file):
+					with open(input_file_name, 'rb') as input_fd:
+						shutil.copyfileobj(input_fd, combined_fd)
+
+				# Ensure the file is flushed
+				combined_fd.flush()
+
+				# Load the cert chain using that
+				context.load_cert_chain(combined_fd.name, key_file)
+		else:
+			# Load just the single file
+			context.load_cert_chain(cert_file, key_file)
 
 		# Wrap the socket
 		server.socket = context.wrap_socket(server.socket, server_side=True)
+	elif not ca_file or not key_file:
+		# Misconfiguration
+		raise Exception('Missing cert_file parameter')
 
 	return server
 
 
-def init_bot_webhook(host, port, bot, channels=[], cert_file=None, secret=None):
+def init_bot_webhook(host, port, bot, channels=[], **kwargs):
 	# Create the server
-	server = _create_server(host, port, hook=BotHook(bot, channels), cert_file=cert_file, secret=secret)
+	server = _create_server(host, port, hook=BotHook(bot, channels), **kwargs)
 
 	# Spawn a thread to handle the requests
 	thread = threading.Thread(target=server.serve_forever)
@@ -331,10 +353,12 @@ if __name__ == '__main__':
 	parser.add_argument('--port', help='Port to listen on', type=int, default=80)
 	parser.add_argument('--cert-file', help='Certificate file')
 	parser.add_argument('--secret', help='The secret to check the hash against')
+	parser.add_argument('--ca-file', help='Certificate authority file')
+	parser.add_argument('--key-file', help='Private key file')
 	args = parser.parse_args()
 
 	# Create the server
-	server = _create_server(args.host, args.port, hook=StdOutHook(), cert_file=args.cert_file, secret=args.secret)
+	server = _create_server(args.host, args.port, hook=StdOutHook(), cert_file=args.cert_file, secret=args.secret, ca_file=args.ca_file, key_file=args.key_file)
 
 	# Listen until someone sends in a SIGINT
 	server.serve_forever()
