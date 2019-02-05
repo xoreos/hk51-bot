@@ -280,7 +280,7 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 			author = commit['author']
 			author_name = author['name']
 			message = commit['message']
-			messages.append('{0}/{1} {2} {3}: {4}'.format(repo_name, branch, commit_hash[:7], author_name, message))
+			messages.append('{0}/{1} {2} {3}: {4}'.format(repo_name, branch, commit_hash[:7], author_name, message.split('\n', 1)[0][:130]))
 
 		self._on_messages(messages)
 
