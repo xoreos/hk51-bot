@@ -239,11 +239,12 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 					after[:7],
 					compare_url)
 			else:
-				top_message = '[{0}] {1} created {2} (+{3} new commits): {4}'.format(
+				top_message = '[{0}] {1} created {2} (+{3} new {4}): {5}'.format(
 					repo_name,
 					user,
 					branch,
 					size,
+					'commit' if size == 1 else 'commits',
 					compare_url)
 		elif deleted:
 			# TODO: API doesn't seem to provide the commit URL directly
@@ -263,10 +264,11 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 				after[:7],
 				repo_url + '/commits/' + branch)
 		else:
-			top_message = '[{0}] {1} pushed {2} new commits to {3}: {4}'.format(
+			top_message = '[{0}] {1} pushed {2} new {3} to {4}: {5}'.format(
 				repo_name,
 				user,
 				size,
+				'commit' if size == 1 else 'commits',
 				branch,
 				compare_url)
 
