@@ -103,10 +103,8 @@ def quote(bot, trigger):
 	bot.say(random.choice(quotes))
 
 @sopel.module.rule('(pokes|kicks) $nickname')
+@sopel.module.intent('ACTION')
 def poke_bot(bot, trigger):
-	if trigger.tags.get('intent', '') != 'ACTION':
-		return
-
 	bot.say('Exclamation: That hurt my circuitry!')
 
 
