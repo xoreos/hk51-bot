@@ -188,8 +188,8 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 		base_ref = base['ref']
 		repo = request['repository']
 		repo_name = repo['name']
-		user = pull_request['user']
-		login = user['login']
+		sender = request['sender']
+		login = sender['login']
 
 		# Format the message
 		message = '[{0}] {1} {2} pull request #{3}: {4} ({5}..{6}) {7}'.format(
