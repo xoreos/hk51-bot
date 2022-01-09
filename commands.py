@@ -17,28 +17,23 @@
 
 import re
 
+import sopel
+
 # TODO: Allow for commands to work in private messages without the nickname prefix
 
-def rule_wrapper(rule, query=False):
+def _rule_wrapper(rule, query=False):
 	rule = r'^$nickname[:,]?\s+({})'.format(rule)
 
 	if query:
 		rule += r'\??'
 
-	def add_attribute(function):
-		if not hasattr(function, "rule"):
-			function.rule = []
-
-		function.rule.append(rule)
-		return function
-
-	return add_attribute
+	return sopel.module.rule(rule)
 
 def nickname_command(command):
-	return rule_wrapper(command)
+	return _rule_wrapper(command)
 
 def nickname_query(query):
-	return rule_wrapper(query, True)
+	return _rule_wrapper(query, True)
 
 def nickname_commands(*command_list):
 	return nickname_command('|'.join([re.escape(x) for x in command_list]))
