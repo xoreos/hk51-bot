@@ -142,7 +142,7 @@ def loom(bot, trigger):
 
 @nickname_query('how much wood could a woodchuck chuck')
 def woodchuck_phase1(bot, trigger):
-	bot.say('Answer: A woodchuck would chuck no amount of wood since a woodchuck can’t chuck wood.')
+	bot.say('Answer: A woodchuck would chuck no amount of wood since a woodchuck can\'t chuck wood.')
 
 @nickname_query('but if a woodchuck could chuck and would chuck some amount of wood,? what amount of wood would a woodchuck chuck')
 def woodchuck_phase2(bot, trigger):
