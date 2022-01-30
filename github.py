@@ -1,5 +1,5 @@
 # HK-51 IRC Bot
-# Copyright (C) 2018-2019 - Matthew Hoops (clone2727)
+# Copyright (C) 2018-2022 - Matthew Hoops (clone2727)
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -18,27 +18,36 @@
 import hmac
 import http.server
 import json
+import os
+import selectors
 import shutil
+import socket
 import ssl
 import tempfile
 import threading
-
-_message_hook = None
-_secret = None
+import traceback
 
 
-class GitHubHook:
+# Try importing inotify for supporting watching the TLS cert files. If not
+# available, then it just will not support auto-restart.
+try:
+	from . import inotify
+except:
+	inotify = None
+
+
+class _GitHubHook:
 	def on_messages(self, messages):
 		raise NotImplementedError
 
 
-class StdOutHook(GitHubHook):
+class _StdOutHook(_GitHubHook):
 	def on_messages(self, messages):
 		for message in messages:
 			print(message)
 
 
-class BotHook(GitHubHook):
+class _BotHook(_GitHubHook):
 	def __init__(self, bot, channels):
 		self._bot = bot
 		self._channels = channels
@@ -52,28 +61,31 @@ class BotHook(GitHubHook):
 				self._bot.say(message, recipient)
 
 
-class HTTPError(Exception):
+class _HTTPError(Exception):
 	def __init__(self, code, text):
 		super().__init__('{0}: {1}'.format(code, text))
 		self.code = code
 		self.text = text
 
 
-class BadRequestError(HTTPError):
+class _BadRequestError(_HTTPError):
 	def __init__(self):
 		super().__init__(400, 'Bad Request')
 
 
-class ForbiddenError(HTTPError):
+class _ForbiddenError(_HTTPError):
 	def __init__(self):
 		super().__init__(403, 'Forbidden')
 
 
-class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
+class _GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
+	_message_hook = None
+	_secret = None
+
 	def do_POST(self):
 		try:
 			self._handle_post()
-		except HTTPError as ex:
+		except _HTTPError as ex:
 			code = ex.code
 			text = ex.text
 		except Exception as ex:
@@ -100,34 +112,35 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 
 		# Make sure we have a JSON request
 		if content_type != 'application/json':
-			raise BadRequestError()
+			raise _BadRequestError()
 
 		# Verify the content
 		post_body = self.rfile.read(content_len)
-		if _secret:
+		secret = self._secret
+		if secret:
 			# Ensure that we actually have the field in the header
 			if not check_digest:
-				raise BadRequestError()
+				raise _BadRequestError()
 
 			# Only accept sha1 for now
 			if not check_digest.startswith('sha1='):
-				raise BadRequestError()
+				raise _BadRequestError()
 
 			# Strip off the header
 			check_digest = check_digest[5:]
 
 			# Calculate the correct digest
-			correct_digest = hmac.new(_secret, msg=post_body, digestmod='sha1').hexdigest()
+			correct_digest = hmac.new(secret, msg=post_body, digestmod='sha1').hexdigest()
 
 			# Do a secure comparison to make sure we have it
 			if not hmac.compare_digest(correct_digest, check_digest):
-				raise ForbiddenError()
+				raise _ForbiddenError()
 
 		# Parse the payload as json
 		try:
 			request = json.loads(post_body)
 		except json.JSONDecodeError:
-			raise BadRequestError()
+			raise _BadRequestError()
 
 		'''
 		print('GOT REQUEST {0}'.format(event_type))
@@ -285,25 +298,37 @@ class GitHubRequestHandler(http.server.BaseHTTPRequestHandler):
 		self._on_messages(messages)
 
 	def _on_messages(self, messages):
-		hook = _message_hook
+		hook = self._message_hook
 		if hook:
 			hook.on_messages(messages)
 
 
-def _create_server(host, port, cert_file=None, hook=None, secret=None, ca_file=None, key_file=None):
-	# Assign the hook
-	global _message_hook
-	_message_hook = hook
+class _RequestHandlerFactory:
+	def __init__(self, hook, secret):
+		self._hook = hook
 
-	# Assign the secret. Make sure it's encoded as a bytes object.
-	global _secret
-	if isinstance(secret, str):
-		_secret = secret.encode('utf-8')
-	else:
-		_secret = secret
+		# Secret needs to be a bytes object. If it's a string, encode it.
+		if isinstance(secret, str):
+			self._secret = secret.encode('UTF-8')
+		else:
+			self._secret = secret
 
+	def __call__(self, *args, **kwargs):
+		hook = self._hook
+		secret = self._secret
+
+		class RequestWrapper(_GitHubRequestHandler):
+			def __init__(self, *args, **kwargs):
+				self._message_hook = hook
+				self._secret = secret
+				super().__init__(*args, **kwargs)
+
+		return RequestWrapper(*args, **kwargs)
+
+
+def _create_server(factory, cert_file=None, hook=None, secret=None, ca_file=None, key_file=None):
 	# Create the basic server
-	server = http.server.HTTPServer((host, port), GitHubRequestHandler)
+	server = factory.create(_RequestHandlerFactory(hook, secret))
 
 	# Wrap in TLS if we have a cert
 	if cert_file:
@@ -330,19 +355,195 @@ def _create_server(host, port, cert_file=None, hook=None, secret=None, ca_file=N
 
 		# Wrap the socket
 		server.socket = context.wrap_socket(server.socket, server_side=True)
-	elif not ca_file or not key_file:
+	elif ca_file or key_file:
 		# Misconfiguration
 		raise Exception('Missing cert_file parameter')
 
 	return server
 
 
+class _HTTPServerCallback:
+	def __init__(self, server):
+		self._server = server
+
+	def __call__(self, fd):
+		server = self._server
+
+		try:
+			request, client_address = server.get_request()
+		except OSError:
+			return
+
+		if server.verify_request(request, client_address):
+			try:
+				server.process_request(request, client_address)
+			except Exception:
+				server.handle_error(request, client_address)
+
+
+class _HTTPServerFactory:
+	def __init__(self, host, port):
+		info = socket.getaddrinfo(
+			host,
+			port,
+			family=socket.AF_UNSPEC,
+			flags=socket.AI_PASSIVE,
+			type=socket.SOCK_STREAM,
+			proto=socket.IPPROTO_TCP)[0]
+		self._addr = info[4]
+		self._family = info[0]
+
+	def create(self, handler_factory):
+		class ServerWrapper(http.server.HTTPServer):
+			address_family = self._family
+
+		return ServerWrapper(self._addr, handler_factory)
+
+
+if inotify:
+	_WATCH_MASK = inotify.IN_MOVED_TO | inotify.IN_CLOSE_WRITE
+
+	class _InotifyFileNameCallback:
+		def __init__(self, file_names, callback):
+			self._file_names = file_names
+			self._callback = callback
+
+		def __call__(self, mask, cookie, name):
+			if (mask & _WATCH_MASK) != 0 and name in self._file_names:
+				self._callback()
+
+
+class _ServerManager:
+	"""Internal server manager for HTTP."""
+	def __init__(self, host, port, **kwargs):
+		self._factory = _HTTPServerFactory(host, port)
+		self._kwargs = kwargs
+
+		# Initialize some variables to None to help with cleanup.
+		self._server = None
+		self._selector = None
+		self._watcher = None
+
+		# Allocate the server and selector
+		self._selector = selectors.DefaultSelector()
+
+		# Initialize the file watcher
+		self._init_file_watch()
+
+		# Initialize the server
+		self._start_server()
+
+	def __enter__(self):
+		return self
+
+	def __exit__(self, exc_type, exc_value, traceback):
+		self.close()
+
+	def close(self):
+		"""Shutdown the server."""
+		watcher = self._watcher
+		self._watcher = None
+
+		server = self._server
+		self._server = None
+
+		selector = self._selector
+		self._selector = None
+
+		try:
+			if watcher:
+				watcher.close()
+		finally:
+			try:
+				if server:
+					server.server_close()
+			finally:
+				if selector:
+					selector.close()
+
+	def _make_server(self):
+		return _create_server(self._factory, **self._kwargs)
+
+	def _start_server(self):
+		# Allocate the server
+		self._server = self._make_server()
+
+		# Add the HTTP server into the selector
+		self._selector.register(self._server, selectors.EVENT_READ, _HTTPServerCallback(self._server))
+
+	def _close_server(self):
+		server = self._server
+		self._server = None
+
+		if not server:
+			return
+
+		try:
+			self._selector.unregister(server)
+		finally:
+			server.server_close()
+
+	def _init_file_watch(self):
+		# If we don't have inotify, nothing to do.
+		if not inotify:
+			return
+
+		# Figure out which files we have.
+		watch_files = []
+		for var in ('cert_file', 'ca_file', 'key_file'):
+			value = self._kwargs.get(var)
+			if value:
+				watch_files.append(value)
+
+		# If we have no files, there's nothing to do.
+		if not watch_files:
+			return
+
+		# Figure out which directories we need to watch.
+		directories = {}
+		for watch_file in watch_files:
+			directory, base_name = os.path.split(watch_file)
+			try:
+				directories[directory].add(base_name)
+			except KeyError:
+				directories[directory] = set([base_name])
+
+		# Initialize the watcher
+		watcher = inotify.Manager()
+		self._selector.register(watcher, selectors.EVENT_READ, watcher.on_event)
+
+		# Create watches on each directory
+		for directory, file_names in directories.items():
+			watcher.add_watch(directory, _WATCH_MASK, _InotifyFileNameCallback(file_names, self.restart_server))
+
+	def restart_server(self):
+		"""Restart the HTTP server."""
+		self._close_server()
+		self._start_server()
+
+	def run(self):
+		"""Run the server's event loop."""
+		while True:
+			events = self._selector.select()
+			for key, mask in events:
+				try:
+					key.data(key.fd)
+				except Exception:
+					traceback.print_exc()
+
+
 def init_bot_webhook(host, port, bot, channels=[], **kwargs):
 	# Create the server
-	server = _create_server(host, port, hook=BotHook(bot, channels), **kwargs)
+	manager = _ServerManager(host, port, hook=_BotHook(bot, channels), **kwargs)
+
+	# Create a function wrapper to handle the manager
+	def thread_runner():
+		# Run and make sure we de-initialize if we shutdown
+		with manager:
+			manager.run()
 
 	# Spawn a thread to handle the requests
-	thread = threading.Thread(target=server.serve_forever)
+	thread = threading.Thread(target=thread_runner)
 	thread.start()
 
 
@@ -360,7 +561,6 @@ if __name__ == '__main__':
 	args = parser.parse_args()
 
 	# Create the server
-	server = _create_server(args.host, args.port, hook=StdOutHook(), cert_file=args.cert_file, secret=args.secret, ca_file=args.ca_file, key_file=args.key_file)
-
-	# Listen until someone sends in a SIGINT
-	server.serve_forever()
+	with _ServerManager(args.host, args.port, hook=_StdOutHook(), cert_file=args.cert_file, secret=args.secret, ca_file=args.ca_file, key_file=args.key_file) as manager:
+		# Listen until someone sends in a SIGINT
+		manager.run()
